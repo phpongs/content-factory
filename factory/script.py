@@ -115,7 +115,9 @@ def _ollama_llm(prompt: str) -> str:
     try:
         resp = requests.post(
             OLLAMA_URL,
-            json={"model": model, "prompt": prompt, "stream": False},
+            # format=json: Ollama constrains decoding to valid JSON, so the model
+            # can't emit unescaped quotes mid-string (live Gemma did, breaking parse).
+            json={"model": model, "prompt": prompt, "stream": False, "format": "json"},
             timeout=120,
         )
         resp.raise_for_status()
@@ -159,19 +161,8 @@ class ScriptResult:
         return out
 
 
-def write_script(concept, lang: str = "th", *, llm=None) -> ScriptResult:
-    """Generate a COMPASS-voiced short-form script + stock terms for a concept.
-
-    concept: any object with .slug .title .definition .evidence .domain (duck-typed).
-    lang: "th" | "en" | "both".
-    llm:  callable (prompt:str) -> str. Defaults to the local Ollama HTTP path.
-    """
-    if lang not in ("th", "en", "both"):
-        raise ValueError(f"lang must be 'th', 'en', or 'both', got {lang!r}")
-    if llm is None:
-        llm = _ollama_llm
-
-    raw = llm(_build_prompt(concept, lang))
+def _parse_reply(raw: str, lang: str, slug: str) -> ScriptResult:
+    """Coerce one model reply into a ScriptResult, or raise ScriptParseError."""
     data = _extract_json(raw)
 
     terms = data.get("terms") or []
@@ -191,13 +182,32 @@ def write_script(concept, lang: str = "th", *, llm=None) -> ScriptResult:
         script_th = script if lang == "th" else None
         script_en = script if lang == "en" else None
 
-    return ScriptResult(
-        slug=concept.slug,
-        lang=lang,
-        script_th=script_th,
-        script_en=script_en,
-        terms=terms,
-    )
+    return ScriptResult(slug=slug, lang=lang, script_th=script_th, script_en=script_en, terms=terms)
+
+
+def write_script(concept, lang: str = "th", *, llm=None, attempts: int = 3) -> ScriptResult:
+    """Generate a COMPASS-voiced short-form script + stock terms for a concept.
+
+    concept: any object with .slug .title .definition .evidence .domain (duck-typed).
+    lang: "th" | "en" | "both".
+    llm:  callable (prompt:str) -> str. Defaults to the local Ollama HTTP path.
+    attempts: retry count — local LLMs are non-deterministic and occasionally
+        emit truncated/half-formed JSON or skip a key; a re-roll fixes most.
+    """
+    if lang not in ("th", "en", "both"):
+        raise ValueError(f"lang must be 'th', 'en', or 'both', got {lang!r}")
+    if llm is None:
+        llm = _ollama_llm
+
+    prompt = _build_prompt(concept, lang)
+    last_err: ScriptParseError | None = None
+    for _ in range(max(1, attempts)):
+        # ponytail: re-roll on parse failure — cheapest fix for flaky local-LLM JSON.
+        try:
+            return _parse_reply(llm(prompt), lang, concept.slug)
+        except ScriptParseError as e:
+            last_err = e
+    raise last_err  # type: ignore[misc]
 
 
 if __name__ == "__main__":

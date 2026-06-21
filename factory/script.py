@@ -111,7 +111,7 @@ def _build_prompt(concept, lang: str) -> str:
 def _ollama_llm(prompt: str) -> str:
     # ponytail: local-Ollama path. The orchestrator (frontier) may swap `llm` for an
     # MCP/Gemma-backed callable the subagent can't invoke; this is just the runtime default.
-    model = os.environ.get("FACTORY_LLM_MODEL", "gemma2")
+    model = os.environ.get("FACTORY_LLM_MODEL", "gemma4:latest")
     try:
         resp = requests.post(
             OLLAMA_URL,

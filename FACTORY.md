@@ -23,7 +23,9 @@ wiki/concepts/*.md
 
 1. **MPT API running** — `uv run python main.py` (serves `http://127.0.0.1:8080`).
 2. **Local Ollama running** — `ollama serve`, with a Gemma model pulled.
-   Model is read from `FACTORY_LLM_MODEL` (default `gemma2`).
+   Model is read from `FACTORY_LLM_MODEL` (default `gemma4:latest`).
+   Replies are requested in Ollama `format=json` mode and parsed with up to
+   3 retries, since local models occasionally emit malformed/truncated JSON.
 3. **Vault present** at `C:/Users/P/Project/lifeos/wiki/concepts/`.
 
 ## Usage

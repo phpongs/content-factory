@@ -168,7 +168,11 @@ def _parse_reply(raw: str, lang: str, slug: str) -> ScriptResult:
     terms = data.get("terms") or []
     if not isinstance(terms, list):
         raise ScriptParseError(f"'terms' is not a list: {raw[:300]!r}")
-    terms = [str(t) for t in terms]
+    terms = [str(t).strip() for t in terms if str(t).strip()]
+    # A clip with no B-roll terms falls back to near-empty footage. Treat a too-thin
+    # term list as a parse failure so write_script re-rolls instead of shipping it.
+    if len(terms) < 3:
+        raise ScriptParseError(f"too few B-roll terms ({len(terms)}): {raw[:300]!r}")
 
     if lang == "both":
         script_th = data.get("script_th")

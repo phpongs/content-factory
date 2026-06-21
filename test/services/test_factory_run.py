@@ -18,6 +18,11 @@ from factory import run as fr
 
 
 # --- fakes ------------------------------------------------------------------
+def _always_done(task_id, api_url):
+    """Stand-in for poll_task: pretend the render finished successfully (no network)."""
+    return True
+
+
 def _fake_concepts():
     return [
         types.SimpleNamespace(slug="alpha", title="Alpha Concept", terms=["x"]),
@@ -89,7 +94,9 @@ def test_normal_run_both_langs_submits_four_times(patched):
     ledger = patched.tmp / "done.jsonl"
     submit = _RecordingSubmit()
 
-    res = fr.run_factory(count=2, lang="both", done_log=ledger, submit=submit)
+    res = fr.run_factory(
+        count=2, lang="both", done_log=ledger, submit=submit, wait=_always_done
+    )
 
     assert len(submit.calls) == 4            # 2 concepts x 2 langs
     assert len(res) == 4
@@ -102,7 +109,7 @@ def test_normal_run_single_lang_submits_twice(patched):
     ledger = patched.tmp / "done.jsonl"
     submit = _RecordingSubmit()
 
-    fr.run_factory(count=2, lang="th", done_log=ledger, submit=submit)
+    fr.run_factory(count=2, lang="th", done_log=ledger, submit=submit, wait=_always_done)
 
     assert len(submit.calls) == 2            # 2 concepts x 1 lang
     assert all(c["lang"] == "th" for c in submit.calls)
@@ -180,8 +187,31 @@ def test_batch_continues_when_a_submit_fails(patched):
 
     flaky_submit.seen = []
 
-    res = fr.run_factory(count=2, lang="th", done_log=ledger, submit=flaky_submit)
+    res = fr.run_factory(
+        count=2, lang="th", done_log=ledger, submit=flaky_submit, wait=_always_done
+    )
 
     assert len(res) == 2                       # batch did not abort on first failure
     assert res[0]["ok"] is False and res[0]["task_id"] is None
     assert res[1]["ok"] is True and res[1]["task_id"] == "task-ok"
+
+
+# --- serialize: a failed render marks the job failed even if submit succeeded ---
+def test_serialize_waits_and_failed_render_marks_not_ok(patched):
+    ledger = patched.tmp / "done.jsonl"
+    submit = _RecordingSubmit()
+    waited = []
+
+    def failing_wait(task_id, api_url):
+        waited.append(task_id)
+        return False  # render failed downstream
+
+    # the fake select returns 2 concepts regardless of count; th = 1 job each.
+    res = fr.run_factory(
+        count=2, lang="th", done_log=ledger, submit=submit, wait=failing_wait
+    )
+
+    assert len(submit.calls) == 2          # both jobs submitted
+    assert len(waited) == 2               # and we waited on each render
+    assert all(r["ok"] is False for r in res)        # render-fail flips ok to False
+    assert all(r["task_id"] is not None for r in res)  # ...but task_ids still recorded

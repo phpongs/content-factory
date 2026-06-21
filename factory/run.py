@@ -101,6 +101,43 @@ def submit_job(
         return None
 
 
+# MPT task states (app/models/const.py): -1 failed, 1 complete, 4 processing.
+_STATE_FAILED, _STATE_COMPLETE = -1, 1
+
+
+def poll_task(task_id: str, api_url: str, *, session=None, timeout_s: int = 900, interval_s: int = 6) -> bool:
+    """Block until an MPT task completes; return True on success, False on fail/timeout.
+
+    Serializing on this avoids concurrent renders colliding on MoviePy's shared
+    temp-audio basename (`final-1TEMP_MPY_wvf_snd.mp4`) — the WinError 32 we hit
+    when two jobs composed their final clip at once. ponytail: poll, don't thread.
+    `session` injectable for tests.
+    """
+    import time
+
+    sess = session or requests
+    # status endpoint is the videos URL with /<task_id> swapped onto /tasks/<id>
+    base = api_url.rsplit("/videos", 1)[0]
+    status_url = f"{base}/tasks/{task_id}"
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            d = (sess.get(status_url, timeout=10).json() or {}).get("data") or {}
+        except Exception:  # noqa: BLE001 - transient; retry next tick
+            time.sleep(interval_s)
+            continue
+        state, progress = d.get("state"), d.get("progress", 0)
+        if state == _STATE_COMPLETE:
+            return True
+        if state == _STATE_FAILED:
+            print(f"    task {task_id[:8]} FAILED (state -1)")
+            return False
+        print(f"    …{task_id[:8]} {progress}%")
+        time.sleep(interval_s)
+    print(f"    task {task_id[:8]} timed out after {timeout_s}s")
+    return False
+
+
 def run_factory(
     count: int,
     lang: str,
@@ -110,16 +147,24 @@ def run_factory(
     api_url: str = API_URL,
     llm=None,
     submit=None,
+    wait=None,
+    serialize: bool = True,
     dry_run: bool = False,
 ) -> list[dict]:
-    """Orchestrate: select -> script -> submit -> ledger. Returns result dicts.
+    """Orchestrate: select -> script -> submit -> wait -> ledger. Returns result dicts.
 
-    `submit` and `llm` are injectable for testing. dry_run makes ZERO network
+    `submit`/`wait`/`llm` are injectable for testing. dry_run makes ZERO network
     calls and ZERO ledger writes — it just prints what WOULD be generated.
+
+    serialize=True (default): submit ONE job, block until it finishes, then the
+    next. MPT runs up to 5 renders concurrently, but concurrent MoviePy finals
+    collide on a shared temp-audio name on Windows (WinError 32) — so a factory
+    that wants every clip to land must render them one at a time.
     """
-    done_log_path = done_log or DEFAULT_DONE_LOG
-    concepts_path = concepts_dir or DEFAULT_CONCEPTS_DIR
+    done_log_path = Path(done_log) if done_log else DEFAULT_DONE_LOG
+    concepts_path = Path(concepts_dir) if concepts_dir else DEFAULT_CONCEPTS_DIR
     do_submit = submit or submit_job
+    do_wait = wait or poll_task
 
     done = load_done_slugs(done_log_path)
     concepts = select_concepts(concepts_path, done, count)
@@ -141,6 +186,9 @@ def run_factory(
 
             task_id = do_submit(text, sr.terms, langcode, api_url)
             ok = task_id is not None
+            # Block on render completion so the next job doesn't collide with this one.
+            if ok and serialize:
+                ok = do_wait(task_id, api_url)
             append_done(done_log_path, concept.slug, task_id, langcode)
             mark = "ok" if ok else "FAIL"
             print(f"  [{mark}] {concept.slug} [{langcode}] task_id={task_id}")
@@ -155,7 +203,7 @@ def run_factory(
     if dry_run:
         print(f"\nDRY RUN: {skipped} job(s) would be generated. No calls made.")
     else:
-        print(f"\nDone: {submitted} submitted / {failed} failed.")
+        print(f"\nDone: {submitted} done / {failed} failed.")
     return results
 
 

@@ -132,24 +132,36 @@ def _prioritize_unique_source_clips(
     random.shuffle(primary_items)
     random.shuffle(overflow_items)
 
-    # content-factory: clips whose source path contains "__pin_first__" (our avatar
-    # talking-head hook) are pulled to the very front, in filename order, so the
-    # hook always opens the video instead of landing at a random position.
-    def _is_pinned(item: SubClippedVideoClip) -> bool:
-        return "__pin_first__" in str(item.source_file_path)
+    # content-factory: avatar talking-head segments carry "__avatarseg__" in their
+    # path. Interleave them through the timeline (avatar, ~2 B-roll, avatar, …) so
+    # the host keeps reappearing instead of clustering at the front. Segments are
+    # ordered by filename so __avatarseg00__, __avatarseg01__ … stay in script order.
+    def _is_avatar(item: SubClippedVideoClip) -> bool:
+        return "__avatarseg__" in str(item.source_file_path)
 
-    pinned = sorted(
-        (i for i in primary_items if _is_pinned(i)),
+    avatars = sorted(
+        (i for i in primary_items if _is_avatar(i)),
         key=lambda i: str(i.source_file_path),
     )
-    primary_items = pinned + [i for i in primary_items if not _is_pinned(i)]
+    brolls = [i for i in primary_items if not _is_avatar(i)]
+
+    if avatars:
+        spacing = max(1, len(brolls) // len(avatars))  # B-roll clips between avatars
+        woven: list = []
+        bi = 0
+        for av in avatars:
+            woven.append(av)
+            woven.extend(brolls[bi:bi + spacing])
+            bi += spacing
+        woven.extend(brolls[bi:])  # remaining B-roll
+        primary_items = woven
 
     logger.info(
         "prioritized unique video materials, "
         f"sources: {len(grouped_items)}, "
         f"primary clips: {len(primary_items)}, "
         f"fallback clips: {len(overflow_items)}, "
-        f"pinned-first: {len(pinned)}"
+        f"avatar-segments: {len(avatars)}"
     )
     return primary_items + overflow_items
 

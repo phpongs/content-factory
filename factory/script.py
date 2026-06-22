@@ -54,7 +54,9 @@ beats excitement. No emojis in the script body. No hashtags.
 NEVER end with "follow for more", "hit that follow button", "like and subscribe", or \
 any engagement-bait call to follow.
 
-Length: tight enough for a 30-60 second short. A few punchy lines, not an essay.
+Length: a 60-75 second short — roughly 8-12 punchy sentences. Develop the idea
+across a few beats (hook → the mechanism → an example or inversion → takeaway),
+but every sentence still earns its place. Not an essay, not a single paragraph.
 
 You also output 4-6 stock-footage search terms for B-roll: concrete, visual, \
 filmable English nouns/scenes a Pexels search would return real clips for \

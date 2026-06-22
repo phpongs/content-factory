@@ -120,6 +120,54 @@ def render_hook(hook_text: str, dest: Path, *, avatar: Path | None = None) -> Pa
     return dest
 
 
+def split_for_segments(script: str, n: int = 4) -> list[str]:
+    """Split a script into ~n speakable chunks on sentence boundaries.
+
+    Each chunk becomes one avatar segment woven through the video. Sentences are
+    grouped greedily so chunks are roughly even and none is a stray fragment.
+    """
+    import re
+
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", script.strip()) if s.strip()]
+    if len(sentences) <= n:
+        return sentences
+    # greedy even grouping
+    per = len(sentences) / n
+    chunks, cur, target = [], [], per
+    for idx, s in enumerate(sentences, 1):
+        cur.append(s)
+        if idx >= target and len(chunks) < n - 1:
+            chunks.append(" ".join(cur))
+            cur = []
+            target += per
+    if cur:
+        chunks.append(" ".join(cur))
+    return chunks
+
+
+def render_segments(script: str, slug: str, dest_dir: Path, *, n: int = 4,
+                    avatar: Path | None = None) -> list[str]:
+    """Render `n` avatar segments for `script`, named so MPT weaves them in order.
+
+    Returns the list of filenames (each carrying `__avatarseg__` + a zero-padded
+    index) placed in `dest_dir`. Best-effort: a failed segment is skipped, the
+    batch still produces the rest. ponytail: sequential render — InfiniteTalk is
+    single-GPU anyway.
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    chunks = split_for_segments(script, n)
+    out: list[str] = []
+    for i, chunk in enumerate(chunks):
+        dest = dest_dir / f"{slug}__avatarseg__{i:02d}.mp4"
+        try:
+            render_hook(chunk, dest, avatar=avatar)
+            out.append(dest.name)
+            print(f"    avatar seg {i}: {dest.name}")
+        except Exception as e:  # noqa: BLE001 - skip a bad segment, keep going
+            print(f"    ! avatar seg {i} failed: {e}")
+    return out
+
+
 if __name__ == "__main__":
     # Smoke test: render a hook clip with the brand avatar. Requires ComfyUI up.
     import sys

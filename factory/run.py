@@ -91,6 +91,14 @@ def submit_job(
         "voice_name": voice_name,
         "bgm_type": "random",
         "subtitle_enabled": True,
+        # White text, thick black stroke, NO background box (TikTok caption look).
+        "text_fore_color": "#FFFFFF",
+        "text_background_color": False,
+        "stroke_color": "#000000",
+        "stroke_width": 3.0,
+        "font_size": 72,
+        "subtitle_position": "bottom",
+        "video_clip_duration": 4,
     }
     if materials:
         payload["video_materials"] = [
@@ -145,30 +153,19 @@ def poll_task(task_id: str, api_url: str, *, session=None, timeout_s: int = 900,
     return False
 
 
-def _make_avatar_hook(text: str, slug: str) -> str | None:
-    """Render a talking-head hook for `text`, drop it in MPT's local_videos with a
-    `__pin_first__` marker, and return the filename. None on any failure (the clip
-    just falls back to B-roll-only). Imported lazily so non-avatar runs don't need
-    ComfyUI/edge-tts. ponytail: hook only — full-clip avatar is too slow."""
+def _make_avatar_segments(script: str, slug: str, n: int = 4) -> list[str]:
+    """Render `n` avatar talking-head segments for the script, dropped in MPT's
+    local_videos with `__avatarseg__` markers so MPT weaves them through the video.
+    Returns filenames (possibly empty on failure). Imported lazily so non-avatar
+    runs don't need ComfyUI/edge-tts."""
     try:
         from factory import avatar
 
         local_dir = Path("storage/local_videos")
-        local_dir.mkdir(parents=True, exist_ok=True)
-        dest = local_dir / f"{slug}__pin_first__hook.mp4"
-        avatar.render_hook(text, dest)
-        return dest.name
+        return avatar.render_segments(script, slug, local_dir, n=n)
     except Exception as e:  # noqa: BLE001 - avatar is best-effort; never kill the batch
-        print(f"  ! avatar hook failed for {slug}: {e}")
-        return None
-
-
-def _hook_sentence(script: str) -> str:
-    """First sentence of the script — what the avatar speaks as the opening hook."""
-    import re
-
-    parts = re.split(r"(?<=[.!?])\s+", script.strip())
-    return parts[0] if parts else script[:140]
+        print(f"  ! avatar segments failed for {slug}: {e}")
+        return []
 
 
 def run_factory(
@@ -183,6 +180,7 @@ def run_factory(
     wait=None,
     serialize: bool = True,
     avatar_hook: bool = False,
+    avatar_segments: int = 4,
     dry_run: bool = False,
 ) -> list[dict]:
     """Orchestrate: select -> script -> submit -> wait -> ledger. Returns result dicts.
@@ -218,13 +216,13 @@ def run_factory(
                 skipped += 1
                 continue
 
-            # English-only: render an avatar talking-head hook and pin it first.
+            # English-only: render avatar segments woven through the video.
             materials = None
             if avatar_hook and langcode == "en":
-                hook_clip = _make_avatar_hook(_hook_sentence(text), concept.slug)
-                if hook_clip:
-                    materials = [hook_clip]
-                    print(f"  + avatar hook: {hook_clip}")
+                segs = _make_avatar_segments(text, concept.slug, n=avatar_segments)
+                if segs:
+                    materials = segs
+                    print(f"  + avatar segments: {len(segs)} woven in")
 
             task_id = do_submit(text, sr.terms, langcode, api_url, materials=materials)
             ok = task_id is not None
@@ -261,7 +259,9 @@ def main(argv=None) -> int:
     p.add_argument("--concepts-dir", default=None, help="override vault concepts dir")
     p.add_argument("--done-log", default=None, help="override done-ledger path")
     p.add_argument("--avatar-hook", action="store_true",
-                   help="render an avatar talking-head hook (en only; needs ComfyUI)")
+                   help="weave avatar talking-head segments through the video (en only; needs ComfyUI)")
+    p.add_argument("--avatar-segments", type=int, default=4,
+                   help="how many avatar segments to weave in (default 4)")
     args = p.parse_args(argv)
 
     if not args.dry_run:
@@ -277,6 +277,7 @@ def main(argv=None) -> int:
         done_log=Path(args.done_log) if args.done_log else None,
         api_url=args.api_url,
         avatar_hook=args.avatar_hook,
+        avatar_segments=args.avatar_segments,
         dry_run=args.dry_run,
     )
     return 0

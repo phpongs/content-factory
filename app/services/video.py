@@ -131,11 +131,25 @@ def _prioritize_unique_source_clips(
 
     random.shuffle(primary_items)
     random.shuffle(overflow_items)
+
+    # content-factory: clips whose source path contains "__pin_first__" (our avatar
+    # talking-head hook) are pulled to the very front, in filename order, so the
+    # hook always opens the video instead of landing at a random position.
+    def _is_pinned(item: SubClippedVideoClip) -> bool:
+        return "__pin_first__" in str(item.source_file_path)
+
+    pinned = sorted(
+        (i for i in primary_items if _is_pinned(i)),
+        key=lambda i: str(i.source_file_path),
+    )
+    primary_items = pinned + [i for i in primary_items if not _is_pinned(i)]
+
     logger.info(
         "prioritized unique video materials, "
         f"sources: {len(grouped_items)}, "
         f"primary clips: {len(primary_items)}, "
-        f"fallback clips: {len(overflow_items)}"
+        f"fallback clips: {len(overflow_items)}, "
+        f"pinned-first: {len(pinned)}"
     )
     return primary_items + overflow_items
 

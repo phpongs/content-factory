@@ -71,10 +71,13 @@ def submit_job(
     lang: str,
     api_url: str,
     *,
+    materials: list[str] | None = None,
     session=None,
 ) -> str | None:
     """POST one video job to MPT. Returns task_id, or None on any failure.
 
+    `materials` = filenames already placed in MPT's storage/local_videos/ (e.g. the
+    avatar hook clip). They're sent as local MaterialInfo and mixed with B-roll.
     `session` is injectable (a requests.Session-like with .post) for tests.
     Never raises on network errors — one bad job must not kill the batch.
     """
@@ -89,6 +92,10 @@ def submit_job(
         "bgm_type": "random",
         "subtitle_enabled": True,
     }
+    if materials:
+        payload["video_materials"] = [
+            {"provider": "local", "url": m, "duration": 0} for m in materials
+        ]
     sess = session or requests
     try:
         resp = sess.post(api_url, json=payload, timeout=15)
@@ -138,6 +145,32 @@ def poll_task(task_id: str, api_url: str, *, session=None, timeout_s: int = 900,
     return False
 
 
+def _make_avatar_hook(text: str, slug: str) -> str | None:
+    """Render a talking-head hook for `text`, drop it in MPT's local_videos with a
+    `__pin_first__` marker, and return the filename. None on any failure (the clip
+    just falls back to B-roll-only). Imported lazily so non-avatar runs don't need
+    ComfyUI/edge-tts. ponytail: hook only — full-clip avatar is too slow."""
+    try:
+        from factory import avatar
+
+        local_dir = Path("storage/local_videos")
+        local_dir.mkdir(parents=True, exist_ok=True)
+        dest = local_dir / f"{slug}__pin_first__hook.mp4"
+        avatar.render_hook(text, dest)
+        return dest.name
+    except Exception as e:  # noqa: BLE001 - avatar is best-effort; never kill the batch
+        print(f"  ! avatar hook failed for {slug}: {e}")
+        return None
+
+
+def _hook_sentence(script: str) -> str:
+    """First sentence of the script — what the avatar speaks as the opening hook."""
+    import re
+
+    parts = re.split(r"(?<=[.!?])\s+", script.strip())
+    return parts[0] if parts else script[:140]
+
+
 def run_factory(
     count: int,
     lang: str,
@@ -149,6 +182,7 @@ def run_factory(
     submit=None,
     wait=None,
     serialize: bool = True,
+    avatar_hook: bool = False,
     dry_run: bool = False,
 ) -> list[dict]:
     """Orchestrate: select -> script -> submit -> wait -> ledger. Returns result dicts.
@@ -184,7 +218,15 @@ def run_factory(
                 skipped += 1
                 continue
 
-            task_id = do_submit(text, sr.terms, langcode, api_url)
+            # English-only: render an avatar talking-head hook and pin it first.
+            materials = None
+            if avatar_hook and langcode == "en":
+                hook_clip = _make_avatar_hook(_hook_sentence(text), concept.slug)
+                if hook_clip:
+                    materials = [hook_clip]
+                    print(f"  + avatar hook: {hook_clip}")
+
+            task_id = do_submit(text, sr.terms, langcode, api_url, materials=materials)
             ok = task_id is not None
             # Block on render completion so the next job doesn't collide with this one.
             if ok and serialize:
@@ -218,11 +260,15 @@ def main(argv=None) -> int:
     p.add_argument("--api-url", default=API_URL, help="MPT videos endpoint")
     p.add_argument("--concepts-dir", default=None, help="override vault concepts dir")
     p.add_argument("--done-log", default=None, help="override done-ledger path")
+    p.add_argument("--avatar-hook", action="store_true",
+                   help="render an avatar talking-head hook (en only; needs ComfyUI)")
     args = p.parse_args(argv)
 
     if not args.dry_run:
         print("Prereqs: (1) MPT API up — `uv run python main.py` (:8080).")
         print("         (2) local Ollama up — `ollama serve` (Gemma model).")
+        if args.avatar_hook:
+            print("         (3) ComfyUI up (:8000) with InfiniteTalk models for --avatar-hook.")
 
     run_factory(
         count=args.count,
@@ -230,6 +276,7 @@ def main(argv=None) -> int:
         concepts_dir=Path(args.concepts_dir) if args.concepts_dir else None,
         done_log=Path(args.done_log) if args.done_log else None,
         api_url=args.api_url,
+        avatar_hook=args.avatar_hook,
         dry_run=args.dry_run,
     )
     return 0

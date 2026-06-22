@@ -48,8 +48,8 @@ class _RecordingSubmit:
         self.calls = []
         self.task_id = task_id
 
-    def __call__(self, text, terms, lang, api_url):
-        self.calls.append({"text": text, "terms": terms, "lang": lang, "api_url": api_url})
+    def __call__(self, text, terms, lang, api_url, *, materials=None):
+        self.calls.append({"text": text, "terms": terms, "lang": lang, "api_url": api_url, "materials": materials})
         return self.task_id
 
 
@@ -177,7 +177,7 @@ def test_submit_job_returns_none_on_network_error():
 def test_batch_continues_when_a_submit_fails(patched):
     ledger = patched.tmp / "done.jsonl"
 
-    def flaky_submit(text, terms, lang, api_url):
+    def flaky_submit(text, terms, lang, api_url, *, materials=None):
         # First call fails (returns None), the rest succeed.
         if len(flaky_submit.seen) == 0:
             flaky_submit.seen.append(lang)
